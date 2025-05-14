@@ -277,17 +277,56 @@ const EditorComponent = ({
     }
   }, [editor, internalComments, apiStatus]);
 
+  // Effect to apply visual comment marks based on internalComments
   useEffect(() => {
-    if (!editor || Object.keys(internalComments).length === 0) return;
+    if (!editor) return;
+
+    // 1. Clear ALL existing Tiptap comment marks first
+    // This ensures that if a comment ID is no longer in internalComments, its mark is removed.
+    console.log(
+      "[EditorComponent] Clearing existing comment marks before applying new ones."
+    );
+    const trClear = editor.state.tr;
+    let oldMarksCleared = false;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.marks.some((mark) => mark.type.name === CommentExtension.name)) {
+        // Ensure we are removing the correct mark type instance from the schema
+        const commentMarkType = editor.schema.marks[CommentExtension.name];
+        if (commentMarkType) {
+          trClear.removeMark(pos, pos + node.nodeSize, commentMarkType);
+          oldMarksCleared = true;
+        }
+      }
+    });
+
+    if (oldMarksCleared && trClear.docChanged) {
+      isProgrammaticChangeRef.current = true; // Prevent this clear from triggering onUpdate->save/Gemini
+      editor.view.dispatch(trClear);
+      console.log(
+        "[EditorComponent] Dispatched transaction to clear old marks."
+      );
+    }
+
+    // 2. If there are no new comments to apply, we're done.
+    if (Object.keys(internalComments).length === 0) {
+      console.log(
+        "[EditorComponent] No new internal comments to apply after clearing."
+      );
+      return;
+    }
+
+    // 3. Apply new marks
+    // If a clear operation was dispatched, the editor state will update asynchronously.
+    // Applying new marks immediately might be on stale document state if not careful.
+    // However, Tiptap transactions are generally applied synchronously to the state object
+    // before view dispatch. For robustness, one could use a timeout or await next tick
+    // if clearDispatched, but let's try direct application first.
+
     console.log(
       `[EditorComponent] Applying visual marks for ${
         Object.keys(internalComments).length
-      } comments. Editor content sample: "${editor.state.doc.textContent.substring(
-        0,
-        100
-      )}..."`
+      } new comments.`
     );
-
     Object.values(internalComments).forEach((commentDetail) => {
       const { id: commentId, exact_quote } = commentDetail;
       if (!exact_quote) return;
