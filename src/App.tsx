@@ -18,10 +18,8 @@ function App() {
   });
 
   const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
-  // geminiComments now stores { commentId: { id, exact_quote, comment } }
-  // No, simpler: App will store Record<string, { exact_quote: string, comment: string }>
-  // The onNewCommentsReady in EditorComponent will create this structure.
-  const [geminiComments, setGeminiComments] = useState<
+  // NEW state for comments to be displayed in the sidebar, updated by EditorComponent
+  const [displayedComments, setDisplayedComments] = useState<
     Record<string, CommentDetail>
   >({});
 
@@ -30,26 +28,23 @@ function App() {
       localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
     } else {
       localStorage.removeItem(API_KEY_STORAGE_KEY);
-      setGeminiComments({});
+      // When API key is removed, also clear displayed comments and active selection
+      setDisplayedComments({});
       setActiveCommentId(null);
     }
   }, [apiKey]);
 
-  // Called by EditorComponent when new comments are ready from Gemini API
-  const handleNewCommentsReady = (
-    newComments: Record<string, CommentDetail>
-  ) => {
+  // Called by EditorComponent when its internal comments state changes
+  const handleCommentsUpdate = (newComments: Record<string, CommentDetail>) => {
     console.log(
-      "[App] Clearing comments and preparing to set new ones:",
+      "[App] Received comments update from EditorComponent:",
       newComments
     );
-    setGeminiComments({});
-    setActiveCommentId(null);
-
-    setTimeout(() => {
-      console.log("[App] Setting new comments after delay:", newComments);
-      setGeminiComments(newComments);
-    }, 50);
+    setDisplayedComments(newComments);
+    // If the active comment is no longer in the new set, clear it
+    if (activeCommentId && !newComments[activeCommentId]) {
+      setActiveCommentId(null);
+    }
   };
 
   return (
@@ -82,8 +77,7 @@ function App() {
             apiKey={apiKey}
             activeCommentId={activeCommentId}
             setActiveCommentId={setActiveCommentId}
-            geminiCommentsFromApp={geminiComments}
-            onNewCommentsReady={handleNewCommentsReady}
+            onCommentsUpdate={handleCommentsUpdate} // Pass the new handler
           />
         </div>
         <div
@@ -95,7 +89,7 @@ function App() {
           }}
         >
           <CommentSidebar
-            comments={geminiComments}
+            comments={displayedComments} // Pass the new state
             activeCommentId={activeCommentId}
             setActiveCommentId={setActiveCommentId}
           />
