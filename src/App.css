@@ -51,7 +51,37 @@
 /* Add some basic styling for comments if we use them later */
 .my-comment {
   background-color: var(--comment-background);
+  /* Add other styling for comments as needed */
+  border-radius: 4px;
+  padding: 0.1em 0.3em;
+  box-decoration-break: clone;
+}
+
+/* Basic styling for active menu bar buttons */
+.MenuBar button.is-active {
+  background-color: #333;
+  color: white;
+  border: 1px solid #555;
+}
+
+/* Basic styling for menu bar buttons for consistency */
+.MenuBar button {
+  background-color: #f0f0f0;
+  color: #333;
+  border: 1px solid #ccc;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
   cursor: pointer;
-  padding: 0.1em 0.2em;
-  border-radius: 3px;
+}
+
+.MenuBar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Ensure MenuBar div itself is identifiable for styling if needed */
+.MenuBar {
+  display: flex;
+  flex-wrap: wrap; /* Allow buttons to wrap if many are added */
+  gap: 0.25rem; /* Spacing between buttons */
 }

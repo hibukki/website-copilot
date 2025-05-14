@@ -5,6 +5,7 @@ import { useEffect, useCallback, useRef, useState } from "react";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { parse as jsoncParse } from "jsonc-parser";
 import type { CommentDetail } from "./App";
+import MenuBar from "./MenuBar";
 
 interface EditorComponentProps {
   apiKey: string;
@@ -329,6 +330,7 @@ const EditorComponent = ({
 
   return (
     <>
+      {editor && <MenuBar editor={editor} />}
       <EditorContent editor={editor} />
       <div
         style={{
