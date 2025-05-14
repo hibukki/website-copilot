@@ -42,17 +42,22 @@ const EditorComponent = ({
   const [internalComments, setInternalComments] = useState<
     Record<string, CommentDetail>
   >({});
+  const [apiStatus, setApiStatus] = useState<"idle" | "loading" | "error">(
+    "idle"
+  );
   const isProgrammaticChangeRef = useRef(false);
   const editorRef = useRef<Editor | null>(null); // Typed Editor or null
 
   const callGeminiApi = useCallback(
     async (text: string) => {
-      if (!apiKey || text.trim().length === 0 || !editorRef.current) return;
+      if (!apiKey || text.trim().length === 0 || !editorRef.current) {
+        setApiStatus("idle");
+        return;
+      }
       console.log(
         `[callGeminiApi] Calling for text: ${text.substring(0, 50)}...`
       );
-
-      setInternalComments({}); // Clear previous comments
+      setApiStatus("loading");
 
       const genAI = new GoogleGenerativeAI(apiKey);
       const model = genAI.getGenerativeModel({
@@ -71,6 +76,8 @@ const EditorComponent = ({
         const jsonMatch = streamedResponseText.match(/\{.*?\}/s);
         if (!jsonMatch) {
           console.error("No JSON in resp");
+          setApiStatus("error");
+          setInternalComments({});
           return;
         }
         const jsonString = jsonMatch[0];
@@ -79,11 +86,15 @@ const EditorComponent = ({
           responseData = jsoncParse(jsonString) as GeminiResponse;
         } catch (e) {
           console.error("jsoncParse failed:", e);
+          setApiStatus("error");
+          setInternalComments({});
           return;
         }
 
         if (!responseData || !responseData.comments) {
-          console.error("Parse ok, no comments array");
+          console.error("Parse ok, no comments array or invalid structure");
+          setApiStatus("error");
+          setInternalComments({});
           return;
         }
         console.log("[callGeminiApi] Parsed:", responseData);
@@ -103,12 +114,14 @@ const EditorComponent = ({
           };
         });
         setInternalComments(newCommentsForState);
+        setApiStatus("idle");
       } catch (error) {
         console.error("[callGeminiApi] Outer error:", error);
+        setApiStatus("error");
         setInternalComments({});
       }
     },
-    [apiKey /* editorRef is stable, setInternalComments is stable */]
+    [apiKey]
   );
 
   const handleContentUpdate = useCallback(
@@ -134,6 +147,8 @@ const EditorComponent = ({
       const currentText = currentEditor.getText();
       if (apiKey && currentText.trim().length > 0) {
         handleContentUpdate(currentText);
+      } else if (!apiKey || currentText.trim().length === 0) {
+        setApiStatus("idle");
       }
     },
   });
@@ -151,9 +166,9 @@ const EditorComponent = ({
 
   useEffect(() => {
     if (!editor) return;
-    if (Object.keys(internalComments).length === 0) {
+    if (Object.keys(internalComments).length === 0 && apiStatus !== "loading") {
       console.log(
-        "[EditorComponent] internalComments is empty. Clearing visual marks."
+        "[EditorComponent] internalComments is empty & not loading. Clearing visual marks."
       );
       const tr = editor.state.tr;
       let marksCleared = false;
@@ -174,24 +189,64 @@ const EditorComponent = ({
         editor.view.dispatch(tr);
       }
     }
-  }, [editor, internalComments]);
+  }, [editor, internalComments, apiStatus]);
 
   useEffect(() => {
     if (!editor || Object.keys(internalComments).length === 0) return;
     console.log(
       `[EditorComponent] Applying visual marks for ${
         Object.keys(internalComments).length
-      } comments.`
+      } comments. Editor content sample: "${editor.state.doc.textContent.substring(
+        0,
+        100
+      )}..."`
     );
+
     Object.values(internalComments).forEach((commentDetail) => {
       const { id: commentId, exact_quote } = commentDetail;
       if (!exact_quote) return;
+
+      console.log(
+        `[EditorComponent] Searching for quote: |${exact_quote}| (ID: ${commentId})`
+      );
+
       const textContent = editor.state.doc.textContent;
       let searchPos = 0;
       let firstUnmarkedFound = false;
+
       while (searchPos < textContent.length && !firstUnmarkedFound) {
+        console.log(
+          `[EditorComponent] Attempting indexOf at searchPos: ${searchPos}`
+        );
         const currentMatchPos = textContent.indexOf(exact_quote, searchPos);
-        if (currentMatchPos === -1) break;
+        console.log(
+          `[EditorComponent] indexOf result for "${exact_quote}": ${currentMatchPos}`
+        );
+
+        if (currentMatchPos === -1) {
+          console.log(
+            `[EditorComponent] Quote not found after pos ${searchPos}.`
+          );
+          if (searchPos > 0 && searchPos < textContent.length - 1) {
+            const contextSnippetLength = Math.max(20, exact_quote.length + 10);
+            const startContext = Math.max(
+              0,
+              searchPos - contextSnippetLength / 2
+            );
+            const endContext = Math.min(
+              textContent.length,
+              searchPos + contextSnippetLength / 2
+            );
+            console.log(
+              `[EditorComponent] Context around last good searchPos (${searchPos}): "${textContent.substring(
+                startContext,
+                endContext
+              )}"`
+            );
+          }
+          break;
+        }
+
         let isAlreadyMarked = false;
         editor.state.doc.nodesBetween(
           currentMatchPos,
@@ -209,9 +264,12 @@ const EditorComponent = ({
             }
           }
         );
+
         if (!isAlreadyMarked) {
           console.log(
-            `[EditorComponent] Will mark "${exact_quote}" with ID ${commentId} at pos ${currentMatchPos}`
+            `[EditorComponent] Will mark "${exact_quote}" with ID ${commentId} from ${currentMatchPos} to ${
+              currentMatchPos + exact_quote.length
+            }`
           );
           isProgrammaticChangeRef.current = true;
           editor
@@ -223,13 +281,38 @@ const EditorComponent = ({
             .setComment(commentId)
             .run();
           firstUnmarkedFound = true;
+        } else {
+          console.log(
+            `[EditorComponent] Quote "${exact_quote}" (ID: ${commentId}) at pos ${currentMatchPos} is already marked. Continuing search.`
+          );
         }
         searchPos = currentMatchPos + exact_quote.length;
       }
     });
   }, [editor, internalComments]);
 
-  return <EditorContent editor={editor} />;
+  return (
+    <>
+      <EditorContent editor={editor} />
+      <div
+        style={{
+          fontSize: "0.8em",
+          color: "#888",
+          marginTop: "8px",
+          height: "20px",
+        }}
+      >
+        {apiStatus === "loading" && "Fetching comments..."}
+        {apiStatus === "error" && "Error fetching comments."}
+        {apiStatus === "idle" &&
+          Object.keys(internalComments).length > 0 &&
+          "Comments loaded."}
+        {apiStatus === "idle" &&
+          Object.keys(internalComments).length === 0 &&
+          "Ready."}
+      </div>
+    </>
+  );
 };
 
 export default EditorComponent;
