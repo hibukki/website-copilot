@@ -50,6 +50,8 @@
 
 /* Add some basic styling for comments if we use them later */
 .my-comment {
-  background-color: yellow;
+  background-color: var(--comment-background);
   cursor: pointer;
+  padding: 0.1em 0.2em;
+  border-radius: 3px;
 }

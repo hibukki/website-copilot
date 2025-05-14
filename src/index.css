@@ -6,6 +6,12 @@
   color-scheme: light dark;
   color: rgba(255, 255, 255, 0.87);
   background-color: #242424;
+  --comment-background: rgba(
+    100,
+    108,
+    255,
+    0.2
+  ); /* Semi-transparent accent for dark mode */
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -58,6 +64,12 @@ button:focus-visible {
   :root {
     color: #213547;
     background-color: #ffffff;
+    --comment-background: rgba(
+      100,
+      108,
+      255,
+      0.15
+    ); /* Slightly more transparent/lighter for light mode */
   }
   a:hover {
     color: #747bff;

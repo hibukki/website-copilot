@@ -1,7 +1,7 @@
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import CommentExtension from "@sereneinserenade/tiptap-comment-extension";
-import { useState, useEffect, useCallback } from "react";
+import { useEffect, useCallback } from "react";
 import {
   GoogleGenerativeAI,
   HarmCategory,
@@ -16,6 +16,11 @@ import type { Location } from "jsonc-parser";
 
 interface EditorComponentProps {
   apiKey: string;
+  activeCommentId: string | null;
+  setActiveCommentId: (id: string | null) => void;
+  geminiComments: Record<string, string>;
+  onNewComments: (comments: Record<string, string>) => void;
+  clearExistingComments: () => void;
 }
 
 // Specific debounce function for callGeminiApi
@@ -43,25 +48,28 @@ function debounceGeminiSpecific(
   };
 }
 
-interface GeminiComment {
+interface GeminiCommentResponseItem {
   exact_quote: string;
   comment: string;
 }
 
 interface GeminiResponse {
-  comments: GeminiComment[];
+  comments: GeminiCommentResponseItem[];
 }
 
-const EditorComponent = ({ apiKey }: EditorComponentProps) => {
-  const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
-  // Store comments retrieved from Gemini
-  const [geminiComments, setGeminiComments] = useState<Record<string, string>>(
-    {}
-  );
-
+const EditorComponent = ({
+  apiKey,
+  activeCommentId,
+  setActiveCommentId,
+  geminiComments,
+  onNewComments,
+  clearExistingComments,
+}: EditorComponentProps) => {
   console.log(
     "[EditorComponent] Rendering with API Key:",
-    apiKey ? "SET" : "NOT SET"
+    apiKey ? "SET" : "NOT SET",
+    "Active ID:",
+    activeCommentId
   );
 
   const editor = useEditor({
@@ -216,6 +224,9 @@ Example Response Format:
       console.log("Gemini Parsed Response (with jsonc-parser):", responseData);
 
       if (responseData && responseData.comments && editor) {
+        // Call the prop to clear existing comments first (logic to be fully implemented in App.tsx)
+        clearExistingComments();
+
         const newComments: Record<string, string> = {};
         responseData.comments.forEach((item, index) => {
           const { exact_quote, comment } = item;
@@ -288,7 +299,7 @@ Example Response Format:
             );
           }
         });
-        setGeminiComments((prev) => ({ ...prev, ...newComments }));
+        onNewComments(newComments);
       }
     } catch (error) {
       console.error("Error calling Gemini API or processing response:", error);
@@ -306,7 +317,7 @@ Example Response Format:
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleContentUpdate = useCallback(
     debounceGeminiSpecific(callGeminiApi, 2000),
-    [apiKey, editor]
+    [apiKey, editor, clearExistingComments, onNewComments]
   ); // Recreate if apiKey or editor changes
 
   useEffect(() => {
@@ -317,11 +328,7 @@ Example Response Format:
     if (!editor) {
       return;
     }
-    // Clear comments if API key is removed or editor is destroyed
-    return () => {
-      console.log("[EditorComponent] Cleanup effect for editor/apiKey.");
-      setGeminiComments({});
-    };
+    // Cleanup for comments is now handled by App.tsx via onNewComments and clearExistingComments
   }, [editor, apiKey]);
 
   return (
