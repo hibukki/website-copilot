@@ -61,9 +61,22 @@ const EditorComponent = ({
 
       const genAI = new GoogleGenerativeAI(apiKey);
       const model = genAI.getGenerativeModel({
-        model: "gemini-1.5-flash-latest",
+        model: "gemini-2.0-flash",
       });
-      const prompt = `Please leave one or more comments in this JSON response structure: { "comments": [{"exact_quote": "...", "comment": "..."}, {"exact_quote": "...", "comment": "..."}] } for text: ${text}`;
+      const prompt = `Please leave one or more comments in this JSON response structure:
+
+      { 
+        "comments": [
+            {"exact_quote": "...", "comment": "..."}, 
+            {"exact_quote": "...", "comment": "..."}
+        ] 
+       } 
+       
+      The text to comment on is:
+      <text>
+        ${text}
+      </text>
+      `;
 
       try {
         const result = await model.generateContentStream([{ text: prompt }]);
@@ -71,16 +84,39 @@ const EditorComponent = ({
         for await (const chunk of result.stream) {
           streamedResponseText += chunk.text();
         }
-        console.log("[callGeminiApi] Raw:", streamedResponseText);
+        console.log("[callGeminiApi] Raw streamed text:", streamedResponseText);
 
-        const jsonMatch = streamedResponseText.match(/\{.*?\}/s);
-        if (!jsonMatch) {
-          console.error("No JSON in resp");
-          setApiStatus("error");
-          setInternalComments({});
-          return;
+        let jsonString = "";
+        const codeBlockRegex = /```json\n(.*\n)```/s;
+        const codeBlockMatch = streamedResponseText.match(codeBlockRegex);
+
+        if (codeBlockMatch && codeBlockMatch[1]) {
+          jsonString = codeBlockMatch[1].trim();
+          console.log(
+            "[callGeminiApi] Extracted JSON from code block:",
+            jsonString
+          );
+        } else {
+          // Fallback: find first '{' and last '}'
+          const firstBrace = streamedResponseText.indexOf("{");
+          const lastBrace = streamedResponseText.lastIndexOf("}");
+          if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            jsonString = streamedResponseText.substring(
+              firstBrace,
+              lastBrace + 1
+            );
+            console.log(
+              "[callGeminiApi] Extracted JSON by brace matching:",
+              jsonString
+            );
+          } else {
+            console.error("Could not find valid JSON structure in response");
+            setApiStatus("error");
+            setInternalComments({});
+            return;
+          }
         }
-        const jsonString = jsonMatch[0];
+
         let responseData: GeminiResponse | undefined;
         try {
           responseData = jsoncParse(jsonString) as GeminiResponse;
