@@ -6,6 +6,10 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { parse as jsoncParse } from "jsonc-parser";
 import type { CommentDetail } from "./App";
 import MenuBar from "./MenuBar";
+import {
+  listenToDocumentInFirestore,
+  saveDocumentToFirestore,
+} from "./firestoreService";
 
 interface EditorComponentProps {
   apiKey: string;
@@ -47,7 +51,8 @@ const EditorComponent = ({
     "idle"
   );
   const isProgrammaticChangeRef = useRef(false);
-  const editorRef = useRef<Editor | null>(null); // Typed Editor or null
+  const isFirestoreUpdateRef = useRef(false);
+  const editorRef = useRef<Editor | null>(null);
 
   const callGeminiApi = useCallback(
     async (text: string) => {
@@ -62,7 +67,7 @@ const EditorComponent = ({
 
       const genAI = new GoogleGenerativeAI(apiKey);
       const model = genAI.getGenerativeModel({
-        model: "gemini-2.0-flash",
+        model: "gemini-1.5-flash-latest",
       });
       const prompt = `Please leave one or more comments in this JSON response structure:
 
@@ -161,7 +166,7 @@ const EditorComponent = ({
     [apiKey]
   );
 
-  const handleContentUpdate = useCallback(
+  const handleContentUpdateForGemini = useCallback(
     debounceGeminiSpecific(callGeminiApi, 2000),
     [callGeminiApi]
   );
@@ -174,27 +179,71 @@ const EditorComponent = ({
         onCommentActivated: setActiveCommentId,
       }),
     ],
-    content: "<p>Start typing here and Gemini will try to add comments...</p>",
+    content: "<p>Loading content from Firestore...</p>",
     onUpdate: ({ editor: currentEditor }: { editor: Editor }) => {
       editorRef.current = currentEditor;
+
+      if (isFirestoreUpdateRef.current) {
+        isFirestoreUpdateRef.current = false;
+        return;
+      }
       if (isProgrammaticChangeRef.current) {
         isProgrammaticChangeRef.current = false;
         return;
       }
+
+      const jsonContent = currentEditor.getJSON();
+      saveDocumentToFirestore(jsonContent);
+
       const currentText = currentEditor.getText();
       if (apiKey && currentText.trim().length > 0) {
-        handleContentUpdate(currentText);
+        handleContentUpdateForGemini(currentText);
       } else if (!apiKey || currentText.trim().length === 0) {
         setApiStatus("idle");
       }
     },
   });
 
-  // Effect to assign editor to ref once it's initialized
   useEffect(() => {
     if (editor) {
       editorRef.current = editor;
     }
+  }, [editor]);
+
+  useEffect(() => {
+    if (!editor) return;
+
+    console.log("[EditorComponent] Setting up Firestore listener...");
+    const unsubscribe = listenToDocumentInFirestore((content) => {
+      if (editor && content) {
+        console.log(
+          "[EditorComponent] Firestore data received, updating editor."
+        );
+        isFirestoreUpdateRef.current = true;
+        if (JSON.stringify(editor.getJSON()) !== JSON.stringify(content)) {
+          editor.commands.setContent(content, false);
+        } else {
+          console.log(
+            "[EditorComponent] Firestore data same as current editor, skipping setContent."
+          );
+          isFirestoreUpdateRef.current = false;
+        }
+      } else if (editor && content === null) {
+        console.log(
+          "[EditorComponent] Firestore document deleted or does not exist, clearing editor."
+        );
+        isFirestoreUpdateRef.current = true;
+        editor.commands.setContent(
+          "<p>Start typing a new document...</p>",
+          false
+        );
+      }
+    });
+
+    return () => {
+      console.log("[EditorComponent] Unsubscribing from Firestore listener.");
+      unsubscribe();
+    };
   }, [editor]);
 
   useEffect(() => {

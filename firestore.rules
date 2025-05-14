@@ -1,0 +1,18 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Allow public read and write access ONLY to the specific shared document
+    match /documents/sharedDoc {
+      allow read, write: if true;
+    }
+
+    // IMPORTANT: Secure all other paths in your database by default.
+    // This rule denies read/write to any other document/collection 
+    // unless explicitly allowed by other more specific rules (which we don't have here).
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
