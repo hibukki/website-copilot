@@ -1,58 +1,55 @@
 import "./App.css";
 import EditorComponent from "./EditorComponent";
 import { useState, useEffect } from "react";
-import CommentSidebar from "./CommentSidebar"; // Uncommented
+import CommentSidebar from "./CommentSidebar";
 
 const API_KEY_STORAGE_KEY = "geminiApiKey";
+
+// New type for storing full comment details
+export interface CommentDetail {
+  id: string; // This will be the key in the Record
+  exact_quote: string;
+  comment: string;
+}
 
 function App() {
   const [apiKey, setApiKey] = useState<string>(() => {
     return localStorage.getItem(API_KEY_STORAGE_KEY) || "";
   });
 
-  // State lifted from EditorComponent
   const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
-  const [geminiComments, setGeminiComments] = useState<Record<string, string>>(
-    {}
-  );
+  // geminiComments now stores { commentId: { id, exact_quote, comment } }
+  // No, simpler: App will store Record<string, { exact_quote: string, comment: string }>
+  // The onNewCommentsReady in EditorComponent will create this structure.
+  const [geminiComments, setGeminiComments] = useState<
+    Record<string, CommentDetail>
+  >({});
 
   useEffect(() => {
     if (apiKey) {
       localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
     } else {
-      // Optionally, remove the key if it's cleared
       localStorage.removeItem(API_KEY_STORAGE_KEY);
-      // If API key is cleared, also clear comments
       setGeminiComments({});
       setActiveCommentId(null);
     }
   }, [apiKey]);
 
-  // Callback for EditorComponent to update comments
-  const handleNewComments = (newComments: Record<string, string>) => {
-    // This will replace all previous comments with the new set from Gemini
-    setGeminiComments(newComments);
-    // Optionally, if you want to keep the active comment if it still exists in newComments:
-    // if (activeCommentId && !newComments[activeCommentId]) {
-    //   setActiveCommentId(null);
-    // }
-  };
-
-  // Callback for EditorComponent to signal clearing comments
-  // The actual editor mark clearing needs to be handled carefully.
-  // For now, this primarily resets the App state.
-  // EditorComponent will need a way to react to this if we want to clear marks from App.
-  const handleClearExistingComments = () => {
+  // Called by EditorComponent when new comments are ready from Gemini API
+  const handleNewCommentsReady = (
+    newComments: Record<string, CommentDetail>
+  ) => {
     console.log(
-      "[App] handleClearExistingComments called. Clearing geminiComments state."
+      "[App] Clearing comments and preparing to set new ones:",
+      newComments
     );
     setGeminiComments({});
     setActiveCommentId(null);
-    // How to trigger editor.commands.unsetComment for all existing comments from here?
-    // This is the tricky part. Tiptap editor instance is not directly accessible here.
-    // We might need to pass a ref or a trigger mechanism down to EditorComponent.
-    // For now, this clears the state that would populate the sidebar.
-    // The EditorComponent itself will not re-apply old marks it doesn't know about.
+
+    setTimeout(() => {
+      console.log("[App] Setting new comments after delay:", newComments);
+      setGeminiComments(newComments);
+    }, 50);
   };
 
   return (
@@ -69,37 +66,32 @@ function App() {
           style={{ marginBottom: "1rem", width: "300px" }}
         />
       </div>
-      <div
-        style={{
-          display: "flex",
-          flexGrow: 1,
-          overflow: "hidden" /* Prevent page scroll */,
-        }}
-      >
+      <div style={{ display: "flex", flexGrow: 1, overflow: "hidden" }}>
         <div
           style={{
-            flexGrow: 3,
+            flexBasis: "70%",
             marginRight: "1rem",
             border: "1px solid #555",
             padding: "0.5rem",
-            overflowY: "auto" /* Scroll editor if needed */,
+            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column",
           }}
         >
           <EditorComponent
             apiKey={apiKey}
             activeCommentId={activeCommentId}
             setActiveCommentId={setActiveCommentId}
-            geminiComments={geminiComments}
-            onNewComments={handleNewComments}
-            clearExistingComments={handleClearExistingComments}
+            geminiCommentsFromApp={geminiComments}
+            onNewCommentsReady={handleNewCommentsReady}
           />
         </div>
         <div
           style={{
-            flexGrow: 1,
+            flexBasis: "30%",
             border: "1px solid #555",
             padding: "1rem",
-            overflowY: "auto" /* Scroll sidebar if needed */,
+            overflowY: "auto",
           }}
         >
           <CommentSidebar

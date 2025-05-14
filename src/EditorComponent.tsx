@@ -1,26 +1,17 @@
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import CommentExtension from "@sereneinserenade/tiptap-comment-extension";
-import { useEffect, useCallback } from "react";
-import {
-  GoogleGenerativeAI,
-  HarmCategory,
-  HarmBlockThreshold,
-} from "@google/generative-ai";
-import {
-  parse as jsoncParse,
-  getLocation,
-  printParseErrorCode,
-} from "jsonc-parser";
-import type { Location } from "jsonc-parser";
+import { useEffect, useCallback, useRef } from "react";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { parse as jsoncParse } from "jsonc-parser";
+import type { CommentDetail } from "./App"; // Import CommentDetail
 
 interface EditorComponentProps {
   apiKey: string;
   activeCommentId: string | null;
   setActiveCommentId: (id: string | null) => void;
-  geminiComments: Record<string, string>;
-  onNewComments: (comments: Record<string, string>) => void;
-  clearExistingComments: () => void;
+  geminiCommentsFromApp: Record<string, CommentDetail>; // Expecting full detail
+  onNewCommentsReady: (comments: Record<string, CommentDetail>) => void;
 }
 
 // Specific debounce function for callGeminiApi
@@ -31,18 +22,10 @@ function debounceGeminiSpecific(
   let timeout: ReturnType<typeof setTimeout> | null = null;
 
   return (text: string): void => {
-    console.log(
-      "[Debounce] Will call function with:",
-      text.substring(0, 30) + "..."
-    ); // Log when debounce is triggered
     if (timeout !== null) {
       clearTimeout(timeout);
     }
     timeout = setTimeout(() => {
-      console.log(
-        "[Debounce] Executing debounced function with:",
-        text.substring(0, 30) + "..."
-      ); // Log when function actually executes
       func(text);
     }, waitFor);
   };
@@ -59,17 +42,12 @@ interface GeminiResponse {
 
 const EditorComponent = ({
   apiKey,
-  activeCommentId,
   setActiveCommentId,
-  geminiComments,
-  onNewComments,
-  clearExistingComments,
+  geminiCommentsFromApp,
+  onNewCommentsReady,
 }: EditorComponentProps) => {
-  console.log(
-    "[EditorComponent] Rendering with API Key:",
-    apiKey ? "SET" : "NOT SET",
-    "Active ID:",
-    activeCommentId
+  const prevGeminiCommentsRef = useRef<Record<string, CommentDetail>>(
+    geminiCommentsFromApp
   );
 
   const editor = useEditor({
@@ -80,271 +58,205 @@ const EditorComponent = ({
           class: "my-comment",
         },
         // When a comment mark is clicked, show the comment from our state
-        onCommentActivated: (commentId) => {
-          console.log("[Editor] Comment activated:", commentId);
-          setActiveCommentId(commentId);
-        },
+        onCommentActivated: setActiveCommentId,
       }),
     ],
     content: "<p>Start typing here and Gemini will try to add comments...</p>",
     // Trigger onUpdate when editor content changes
     onUpdate: ({ editor: currentEditor }) => {
       const currentText = currentEditor.getText();
-      console.log(
-        "[Editor] onUpdate triggered. API Key:",
-        apiKey ? "SET" : "NOT SET",
-        "Text length:",
-        currentText.length
-      );
       if (apiKey && currentText.trim().length > 0) {
-        // Ensure text is not empty
         handleContentUpdate(currentText);
       }
     },
   });
 
+  useEffect(() => {
+    if (!editor) return;
+
+    const currentCommentsEmpty =
+      Object.keys(geminiCommentsFromApp).length === 0;
+    const prevCommentsEmpty =
+      Object.keys(prevGeminiCommentsRef.current).length === 0;
+
+    // If current app comments are empty, and previously they were not, it means clear was intended.
+    if (currentCommentsEmpty && !prevCommentsEmpty) {
+      console.log(
+        "[EditorComponent] Detected geminiCommentsFromApp is empty. Clearing all visual comment marks."
+      );
+      const tr = editor.state.tr;
+      let marksCleared = false;
+      editor.state.doc.descendants((node, pos) => {
+        if (
+          node.marks.some((mark) => mark.type.name === CommentExtension.name)
+        ) {
+          tr.removeMark(
+            pos,
+            pos + node.nodeSize,
+            editor.schema.marks[CommentExtension.name]
+          );
+          marksCleared = true;
+        }
+      });
+      if (marksCleared && tr.docChanged) {
+        editor.view.dispatch(tr);
+      }
+    }
+    // If current app comments are populated, apply them (handles initial load or new comments after clear)
+    // This needs to be more careful to not re-apply if they are already visually there.
+    // For now, this logic is simplified and might re-apply. The main Gemini call path is more robust.
+    // This useEffect is primarily for the CLEARING. The adding of new comments is handled by callGeminiApi -> onNewCommentsReady.
+    // However, if we wanted to *restore* comments from geminiCommentsFromApp (e.g. on load), this is where it might go.
+    // For now, let's focus on the clear path.
+
+    prevGeminiCommentsRef.current = geminiCommentsFromApp; // Update ref for next comparison
+  }, [editor, geminiCommentsFromApp]);
+
   const callGeminiApi = async (text: string) => {
+    if (!apiKey || text.trim().length === 0 || !editor) return;
     console.log(
-      "[callGeminiApi] Attempting to call Gemini. API Key:",
-      apiKey ? "SET" : "NOT SET"
-    );
-    if (!apiKey) {
-      console.warn("[callGeminiApi] Gemini API key is not set. Aborting.");
-      return;
-    }
-    if (text.trim().length === 0) {
-      console.log("[callGeminiApi] Text is empty. Aborting.");
-      return;
-    }
-    console.log(
-      "Calling Gemini API with text:",
-      text.substring(0, 100) + "..."
+      "[callGeminiApi] Calling for text:",
+      text.substring(0, 50) + "..."
     );
 
     const genAI = new GoogleGenerativeAI(apiKey);
-
-    const generationConfig = {
-      temperature: 0.7,
-      topP: 0.95,
-      topK: 64,
-      maxOutputTokens: 8192,
-      responseMimeType: "application/json",
-    };
-
-    const safetySettings = [
-      {
-        category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-      },
-      {
-        category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-      },
-      {
-        category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-      },
-      {
-        category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-      },
-    ];
-
     const model = genAI.getGenerativeModel({
       model: "gemini-1.5-flash-latest",
-      generationConfig,
-      safetySettings,
     });
-
-    const prompt = `Given the following text, please identify specific phrases or sentences (exact quotes) that could be commented on for clarity, improvement, or to add context. For each identified quote, provide a concise comment. Please return the response as a JSON object with a single key "comments", which is an array of objects. Each object in the array should have two keys: "exact_quote" (the exact text to be commented on) and "comment" (your suggested comment). Please ensure the JSON is well-formed.
-
-Text:
----
-${text}
----
-
-Example Response Format:
-{
-  "comments": [
-    {"exact_quote": "This is a phrase.", "comment": "Consider rephrasing for clarity."},
-    {"exact_quote": "Another sentence here.", "comment": "This could be expanded with more details."}
-    // It's okay if there's a trailing comma here, my parser can handle it.
-  ]
-}
-`;
+    const prompt = `JSON response of { "comments": [{"exact_quote": "...", "comment": "..."}] } for text: ${text}`;
 
     try {
-      console.log("[callGeminiApi] Sending prompt to Gemini...");
       const result = await model.generateContentStream([{ text: prompt }]);
-
       let streamedResponseText = "";
       for await (const chunk of result.stream) {
         streamedResponseText += chunk.text();
       }
+      console.log("[callGeminiApi] Raw:", streamedResponseText);
 
-      console.log("Gemini Raw Response Text:", streamedResponseText);
-
-      // Attempt to find the JSON part if the response isn't pure JSON
       const jsonMatch = streamedResponseText.match(/\{.*?\}/s);
       if (!jsonMatch) {
-        console.error(
-          "Gemini API response does not contain valid JSON structure:",
-          streamedResponseText
-        );
+        console.error("No JSON in resp");
         return;
       }
       const jsonString = jsonMatch[0];
-      console.log("Gemini Extracted JSON-like string:", jsonString);
 
-      const errors: { error: number; offset: number; length: number }[] = [];
-      const responseData = jsoncParse(jsonString, errors) as GeminiResponse;
+      let responseData: GeminiResponse | undefined;
+      try {
+        responseData = jsoncParse(jsonString) as GeminiResponse;
+      } catch (e) {
+        console.error("jsoncParse failed:", e);
+        return;
+      }
 
-      if (errors.length > 0) {
-        console.warn(
-          "[callGeminiApi] Issues found while parsing JSONC. Attempting to use anyway."
-        );
-        errors.forEach((e) => {
-          const location: Location = getLocation(jsonString, e.offset);
-          console.warn(
-            `  - Error: ${printParseErrorCode(e.error)} at line ${
-              location.line + 1
-            }, character ${location.character + 1}`
-          );
-        });
-        // If responseData is still undefined after permissive parse, or critical error, then fail.
-        if (!responseData || !responseData.comments) {
-          // Check if essential 'comments' array is missing
-          console.error(
-            "[callGeminiApi] Failed to parse critical JSON structure even with jsonc-parser. Content:",
-            jsonString
-          );
+      if (!responseData || !responseData.comments) {
+        console.error("Parse ok, no comments array");
+        return;
+      }
+      console.log("[callGeminiApi] Parsed:", responseData);
+
+      // At this point, App.tsx will first clear geminiCommentsFromApp (triggering the useEffect above to clear marks),
+      // then it will set the new comments from onNewCommentsReady.
+      // So, here we just prepare the new comments and let App.tsx handle the state update sequence.
+
+      const newCommentsForApp: Record<string, CommentDetail> = {};
+      responseData.comments.forEach((item, index) => {
+        if (
+          typeof item.exact_quote !== "string" ||
+          typeof item.comment !== "string"
+        )
           return;
-        }
-      }
-      console.log("Gemini Parsed Response (with jsonc-parser):", responseData);
+        const commentId = `gemini-${Date.now()}-${index}`;
+        newCommentsForApp[commentId] = {
+          id: commentId,
+          exact_quote: item.exact_quote,
+          comment: item.comment,
+        };
 
-      if (responseData && responseData.comments && editor) {
-        // Call the prop to clear existing comments first (logic to be fully implemented in App.tsx)
-        clearExistingComments();
+        // Logic to find and mark text in editor if NOT already marked - this should happen based on geminiCommentsFromApp in useEffect
+        // For now, callGeminiApi just focuses on getting the data. The useEffect is responsible for rendering based on geminiCommentsFromApp.
+        // To avoid re-applying, the useEffect that adds comments needs to be smart.
+      });
 
-        const newComments: Record<string, string> = {};
-        responseData.comments.forEach((item, index) => {
-          const { exact_quote, comment } = item;
-          // Basic validation, as jsoncParse is permissive
-          if (typeof exact_quote !== "string" || typeof comment !== "string") {
-            console.warn(
-              "[callGeminiApi] Invalid comment item received after parsing:",
-              item
-            );
-            return; // Skip this item
-          }
-          const commentId = `gemini-comment-${Date.now()}-${index}`;
-          newComments[commentId] = comment;
-          console.log(
-            `[callGeminiApi] Prepared comment ID ${commentId} for "${exact_quote}": "${comment}"`
-          );
-
-          const textContent = editor.state.doc.textContent;
-          let from = -1;
-          let to = -1;
-          let searchPos = 0;
-
-          while (searchPos < textContent.length) {
-            const currentMatchPos = textContent.indexOf(exact_quote, searchPos);
-            if (currentMatchPos === -1) break;
-
-            let alreadyCommented = false;
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            editor.state.doc.nodesBetween(
-              currentMatchPos,
-              currentMatchPos + exact_quote.length,
-              (node, _) => {
-                if (
-                  node.marks.some(
-                    (mark) => mark.type.name === CommentExtension.name
-                  )
-                ) {
-                  alreadyCommented = true;
-                  return false;
-                }
-              }
-            );
-
-            if (!alreadyCommented) {
-              from = currentMatchPos;
-              to = currentMatchPos + exact_quote.length;
-              console.log(
-                `[callGeminiApi] Found uncommented quote "${exact_quote}" at [${from}, ${to}]`
-              );
-              break;
-            }
-            searchPos = currentMatchPos + exact_quote.length;
-            console.log(
-              `[callGeminiApi] Quote "${exact_quote}" at ${currentMatchPos} is already commented or overlap. Searching next.`
-            );
-          }
-
-          if (from !== -1 && to !== -1) {
-            console.log(
-              `[callGeminiApi] Applying comment '${comment}' to "${exact_quote}" at [${from}, ${to}] with ID ${commentId}`
-            );
-            editor
-              .chain()
-              .setTextSelection({ from, to })
-              .setComment(commentId)
-              .run();
-          } else {
-            console.warn(
-              `[callGeminiApi] Could not find or already commented on quote: "${exact_quote}"`
-            );
-          }
-        });
-        onNewComments(newComments);
-      }
+      onNewCommentsReady(newCommentsForApp); // Send to App.tsx
     } catch (error) {
-      console.error("Error calling Gemini API or processing response:", error);
-      // No longer assuming JSON.parse is the only source of error here
-      if (
-        error instanceof Error &&
-        error.message.includes("API key not valid")
-      ) {
-        alert("Invalid Gemini API Key. Please check and try again.");
-      }
+      console.error("[callGeminiApi] Outer error:", error);
     }
   };
 
-  // Debounced version of the API call
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleContentUpdate = useCallback(
     debounceGeminiSpecific(callGeminiApi, 2000),
-    [apiKey, editor, clearExistingComments, onNewComments]
-  ); // Recreate if apiKey or editor changes
+    [apiKey, editor, onNewCommentsReady] // Dependencies updated
+  );
 
+  // This useEffect is now responsible for applying marks based on geminiCommentsFromApp changes.
   useEffect(() => {
-    console.log(
-      "[EditorComponent] useEffect for editor/apiKey. API Key:",
-      apiKey ? "SET" : "NOT SET"
-    );
-    if (!editor) {
+    if (!editor || Object.keys(geminiCommentsFromApp).length === 0) {
+      // If no comments from app, ensure nothing is (or remains) highlighted if not already cleared
+      // The clearing of marks is handled by the *other* useEffect when geminiCommentsFromApp becomes empty.
       return;
     }
-    // Cleanup for comments is now handled by App.tsx via onNewComments and clearExistingComments
-  }, [editor, apiKey]);
+
+    console.log(
+      "[EditorComponent] geminiCommentsFromApp has data. Applying visual marks:",
+      geminiCommentsFromApp
+    );
+    // This loop is for ADDING new marks if they don't exist.
+    Object.values(geminiCommentsFromApp).forEach((commentDetail) => {
+      const { id: commentId, exact_quote } = commentDetail;
+      const textContent = editor.state.doc.textContent;
+      let from = -1,
+        to = -1,
+        searchPos = 0;
+
+      while (searchPos < textContent.length) {
+        const currentMatchPos = textContent.indexOf(exact_quote, searchPos);
+        if (currentMatchPos === -1) break;
+        let isAlreadyMarked = false;
+
+        editor.state.doc.nodesBetween(
+          currentMatchPos,
+          currentMatchPos + exact_quote.length,
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          (node, _) => {
+            if (
+              node.marks.some(
+                (mark) =>
+                  mark.type.name === CommentExtension.name &&
+                  mark.attrs.commentId === commentId
+              )
+            ) {
+              isAlreadyMarked = true;
+              return false;
+            }
+          }
+        );
+        if (!isAlreadyMarked) {
+          from = currentMatchPos;
+          to = currentMatchPos + exact_quote.length;
+          console.log(
+            `[EditorComponent] Will mark "${exact_quote}" with ID ${commentId}`
+          );
+          editor
+            .chain()
+            .setTextSelection({ from, to })
+            .setComment(commentId)
+            .run();
+          break; // Mark only the first uncommented instance
+        }
+        searchPos = currentMatchPos + exact_quote.length; // Look for next instance if this one was already marked
+      }
+      if (from === -1) {
+        console.warn(
+          `[EditorComponent] Did not apply mark for comment ID ${commentId} (quote: "${exact_quote}"). Already marked or not found.`
+        );
+      }
+    });
+  }, [editor, geminiCommentsFromApp]);
 
   return (
     <>
       <EditorContent editor={editor} />
-      {activeCommentId && geminiComments[activeCommentId] && (
-        <div
-          style={{
-            marginTop: "10px",
-            padding: "10px",
-            border: "1px solid blue",
-          }}
-        >
-          <strong>Comment:</strong> {geminiComments[activeCommentId]}
-        </div>
-      )}
     </>
   );
 };
